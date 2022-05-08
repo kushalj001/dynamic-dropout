@@ -1,0 +1,13 @@
+*tfevents*
+venv
+*.npy
+*pycache*
+*.avi
+*.pyc
+*.gz
+*.ml
+*.pt
+*.yaml
+tmp.py
+.idea
+*.ckpt
