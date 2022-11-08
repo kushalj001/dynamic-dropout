@@ -32,7 +32,9 @@ class SentenceVAE(_SequenceVAE):
     def decode_observation(self, state):
         # state = ([bs, hid_dim], [bs, hid_dim])
         state = state[0] if type(state) == tuple else state
-        state = self.hid_dp(state)
+        # state = self.hid_dp(state)
+        ## applying dropout in the decode_state method on hidden and cell state already.
+        ## don't want double dropout
         return self.word_decoder(state)
         # [bs, output_dim]
 

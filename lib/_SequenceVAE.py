@@ -21,14 +21,14 @@ class _SequenceVAE(pl.LightningModule, ABC):
                  free_bits, ddr, use_soft_mask, lambd, random_scores, **kw):
         super().__init__()
 
-        assert np.count_nonzero(np.array([wdp, ddr, decoder_dropout])) <= 1, "More than 1 dropout technique activated!"
+        #assert np.count_nonzero(np.array([wdp, ddr, decoder_dropout])) <= 1, "More than 1 dropout technique activated!"
         assert 0 <= wdp <= 1 and 0 <= ddr <= 1 and 0 <= decoder_dropout <= 1, "Invalid dropout value!"
 
         # save HPs to checkpoints
         self.training_outputs = []
         #self.automatic_optimization = False
         self.save_hyperparameters()
-
+        self.dataset = dataset
         # signature
         self.signature_string = '_[rst-{}]-s-{}-lr-{}_lrd-{}_b-{}_h-{}_z-{}_klr-{}-tf-{}_dp-{}_wdp-{}_hdp-{}_ema-{}_fb-{}_ddr-{}_lmbd-{}_sm-{}_ddlr-{}_adam-{}' \
             .format(random_scores, seed, lrate, lrate_decay, batch_size, hid_dim, z_dim, kl_rate, tf_level,
@@ -51,6 +51,14 @@ class _SequenceVAE(pl.LightningModule, ABC):
         self.score_model = IsoGaussianFixedSTD()
         self.obs_model = obs_model
 
+        # transformer encoder
+        # self.transformer_encoder_layer = nn.TransformerEncoderLayer(
+        #     d_model=hid_dim,
+        #     nhead=4,
+        #     dim_feedforward=2048,
+        #     batch_first=True
+        # )
+
         # RNN encoder
         self.rnn_encoder = nn.LSTM(embed_dim, hid_dim, num_layers=1, batch_first=True, bidirectional=False)
         self.hid2zparams = nn.Linear(hid_dim, z_dim * self.post_model.params_per_dim(), bias=False)
@@ -59,12 +67,26 @@ class _SequenceVAE(pl.LightningModule, ABC):
         self.z2state = nn.Linear(z_dim, hid_dim, bias=False)
         self.rnn_predict_cell = LSTMCell(z_dim, hid_dim)
         self.rnn_update_cell = LSTMCell(embed_dim + z_dim, hid_dim)
+        self.rnn_update_cell2 = LSTMCell(hid_dim, hid_dim)
+        ## Cannot add number of layers to LSTMCell directly, hence adding another layer/sequence
+        ## of cells manually. This layer will take in the output of the first LSTM upate cell.
+        ## This is primarily to test out the role of cell state in encoding of the information.
+        ## By adding this layer, we can manually add dropout to LSTM cell transitions both in the 
+        ## first layer (kind of word level) and in the second layer (with hope that second layer
+        ## captures sentence level features.) As it stands, do not use double lstm, so rnn_predict
+        ## cell becomes redundant. 
+        self.lstm_dropout1 = nn.Dropout(0.4)
+        self.lstm_dropout2 = nn.Dropout(0.4)
+        ## dropouts for hidden and cell states for both the layers.
+        ## Possibly try with different dropout rates for hidden and cell too. Keeping same for now.
+
         self.decoder_dropout = nn.Dropout(decoder_dropout)
 
         # dynamic dropout
         self.dd_euclidean_projection = ECL()
         self.dd_lstm = nn.LSTM(embed_dim, hid_dim, num_layers=1, batch_first=True, bidirectional=False)
         self.dd_score_predictor = nn.Linear(hid_dim, self.score_model.params_per_dim(), bias=False)
+
 
     # -----------------------------------------------------
     # Engineering and PyTorch Lightning-related methods
@@ -92,13 +114,13 @@ class _SequenceVAE(pl.LightningModule, ABC):
         self.vae_optimizer.zero_grad()
         self.dd_optimizer.zero_grad() if self.hparams.use_adam else None
         sequence, sequence_len = self._get_sequence_from_batch(batch)
-        print("Sequence")
-        print(sequence.shape)
-        print(sequence_len.shape)
-        print(sequence[:3])
-        print(sequence_len[:10])
+        #print("Sequence")
+        #print(sequence.shape)
+        #print(sequence_len.shape)
+        #print(sequence[:3])
+        #print(sequence_len[:10])
         output = self(sequence, sequence_len)
-        self.manual_backward(output['loss'].mean())
+        self.manual_backward(output['loss'].mean(), self.vae_optimizer)
         torch.nn.utils.clip_grad_norm_(self.parameters(), 5.0)
         self.vae_optimizer.step()
         self.dd_optimizer.step() if self.hparams.use_adam else None
@@ -135,13 +157,18 @@ class _SequenceVAE(pl.LightningModule, ABC):
         return {'loss': output['loss'], 'logpxz': output['logpxz'], 'kl_z': output['kl_z']}
 
     def validation_epoch_end(self, outputs):
+        print("Output size: ", len(outputs))
+        print(len(self.testset)/32)
         loss = torch.cat([x['loss'] for x in outputs]).mean()
         logpxz = torch.cat([x['logpxz'] for x in outputs]).mean()
         kl_z = torch.cat([x['kl_z'] for x in outputs]).mean()
-        # mi = self.estimate_mutual_information()  # removed not to slow down evaluation
+        total_kl = torch.cat([x['kl_z'] for x in outputs]).sum()
+        total_rec = torch.cat([x['logpxz'] for x in outputs]).sum()
+        mi = self.estimate_mutual_information()  # removed not to slow down evaluation
         self.ema_restore()
         lr = 0
-        for pg in self.optimizers().optimizer.param_groups:
+        #print(self.optimizers())
+        for pg in self.optimizers().param_groups:
             lr = pg['lr']
         self.logger.log_metrics({'Iteration': self.global_step,
                                  'Validation [total]': loss,
@@ -149,7 +176,18 @@ class _SequenceVAE(pl.LightningModule, ABC):
                                  'Validation [-logpxz]': -logpxz,
                                  'Validation [kl_z]': kl_z,  # 'Validation [MI]': mi,
                                  'Learning rate': lr})  # Here we are logging the learning rate because PL is not...
+        
         self.log('neg_elbo', -logpxz + kl_z)
+        if self.dataset == "PTB":
+            print("PPL: ", torch.exp((-total_rec + total_kl)/82430))
+        elif self.dataset == "SNLI":
+            print("PPL: ", torch.exp((-total_rec + total_kl)/106795))
+        elif self.dataset == "Yahoo":
+            print("PPL: ", torch.exp((-total_rec + total_kl)/798673))
+        print("NELBO: ", -logpxz + kl_z)
+        print("Rec/NLL: ", -logpxz)
+        print("KL: ", kl_z)
+        print("MI: ", mi)
 
     def configure_ema(self):
         self.ema = EMA(self, self.hparams.ema_rate)
@@ -190,6 +228,8 @@ class _SequenceVAE(pl.LightningModule, ABC):
         reconstruction = []
         x_params_list = []
         z_params, _ = self.encode(sequence, sequence_len)
+        # Applies word embedding => LSTM layer => takes the hidden part of the lstm output and passes
+        # it to a linear layer with out_features = 2*z_dim.
         # [bs, z_dim*2], [bs, seq_len, hid_dim]
         # encode sequence with 'reparameterization trick'
         self.z, kl_z = self.post_model.reparameterize(params=z_params, free_bits=self.hparams.free_bits,
@@ -202,9 +242,9 @@ class _SequenceVAE(pl.LightningModule, ABC):
             # mask = [32, 41] 41 seems to be the sequence length
             # [bs, seq_len]
             # kl_scores = [32]
-            print("seq-len", sequence.size(1))
-            print("mask-shape",mask.shape)
-            print(kl_scores.shape)
+            #print("seq-len", sequence.size(1))
+            #print("mask-shape",mask.shape)
+            #print(kl_scores.shape)
         else:
             mask = None
             kl_scores = torch.zeros_like(logpxz)
@@ -214,6 +254,8 @@ class _SequenceVAE(pl.LightningModule, ABC):
         if isinstance(self.rnn_update_cell, LSTMCell):
             state = (state, torch.zeros_like(state))
             # ([bs, hid_dim], [bs, hid_dim])
+            ## initializing the cell state to be zero
+            ## TODO: Should the cell state be initialized same as the hidden state?
         # decode sequence observation-by-observation
         for i in range(sequence.size(1)): # iterate through time_steps dim
             x_params = self.decode_observation(state)
@@ -251,17 +293,32 @@ class _SequenceVAE(pl.LightningModule, ABC):
         input = self.embed_input(input)
         # [bs, emb_dim]
         input = self.decoder_dropout(input)
+        ## input dropout; nothing to do with cell states
         # predict part
         apriori_state = self.rnn_predict_cell(z, state) if (not self.hparams.do_not_use_double_lstm) else state
         # ([bs, hid_dim], [bs, hid_dim])
+        ## state input here is: hidden vector calculated by applying a linear layer
+        ## to the latent vector and the cell vector is a vector of zeros.
+        ## Probably need to try the cell state experiments without double lstm first.
         # dynamic dropout
         if self.hparams.ddr > 0 and self.training and mask is not None:
             input = input * mask
         # update part
-        aposteriori_state = self.rnn_update_cell(torch.cat([input, z], dim=-1), apriori_state)
+        # aposteriori_state = self.rnn_update_cell(torch.cat([input, z], dim=-1), apriori_state)
+        hidden1, cell1 = self.rnn_update_cell(torch.cat([input, z], dim=-1), apriori_state)
         # ([bs, hid_dim], [bs, hid_dim])
+        ## apply dropout to hidden and cell state here
+        hidden1, cell1 = self.lstm_dropout1(hidden1), self.lstm_dropout1(cell1)
+
+        hidden2, cell2 = self.rnn_update_cell2(hidden1, (hidden1, cell1))
+        ## apply dropout to hidden and cell state in the 2nd layer here
+
+        hidden2, cell2 = self.lstm_dropout2(hidden2), self.lstm_dropout2(cell2)
+
+
+        
         # return new state
-        return aposteriori_state
+        return (hidden2, cell2)
 
     @abstractmethod
     def _get_sequence_from_batch(self, batch):
@@ -280,6 +337,7 @@ class _SequenceVAE(pl.LightningModule, ABC):
         # sequence = [bs, seq_len], sequence_len = [bs]
         embedded_sequence = self.embed_input(sequence)
         # [bs, seq_len, emb_dim]
+
         if sequence_len is not None:
             embedded_sequence = pack_padded_sequence(embedded_sequence, sequence_len.cpu(), batch_first=True)
         output, hidden = self.rnn_encoder(embedded_sequence)
@@ -291,12 +349,16 @@ class _SequenceVAE(pl.LightningModule, ABC):
             hidden = hidden[0]
             # [1, bs, hid_dim]
             # hidden is not affected by packing, so it can be taken out directly
+
+            ## only taking out the hidden state over here. If you need to manipulate the cell state
+            ## later on, you might need to come back here.
+            ## This is encoder side. Nothing to do with dropout here.
         if sequence_len is not None:
            output, _ = pad_packed_sequence(output, batch_first=True)
            # Getting the original format tensors again from packing.
-           # [bs, seq_len, 128]
+           # [bs, seq_len, hid_dim]
         return self.hid2zparams(hidden.squeeze()), output
-        # [bs, z_dim*2], [bs, seq_len, 128]
+        # [bs, z_dim*2], [bs, seq_len, hid_dim]
 
     def _get_next_input(self, truth, prediction):
         # input = [bs], prediction = [bs]
@@ -320,7 +382,7 @@ class _SequenceVAE(pl.LightningModule, ABC):
         if sequence_len is not None:
             enc_output, _ = pad_packed_sequence(enc_output, batch_first=True)
             # [bs, seq_len, hid_dim]
-        log_stdout(enc_output.shape, "enc output shape", self.hparams.verbose_frequency, self.global_step)
+        #log_stdout(enc_output.shape, "enc output shape", self.hparams.verbose_frequency, self.global_step)
         return enc_output
 
     def compute_mask(self, sequence, sequence_len):
@@ -332,9 +394,9 @@ class _SequenceVAE(pl.LightningModule, ABC):
         k_vector = torch.round(sequence_len * (1 - self.hparams.ddr)).to(torch.int64)
         # rounded to the closest integer
         # sequence_len = [bs]
-        log_stdout(k_vector, "k-vector", self.hparams.verbose_frequency, self.global_step)
+        #log_stdout(k_vector, "k-vector", self.hparams.verbose_frequency, self.global_step)
         mask = self.dd_euclidean_projection(scores, k_vector, use_soft_mask)
-        log_stdout(mask[0], "mask", self.hparams.verbose_frequency, self.global_step)
+        #log_stdout(mask[0], "mask", self.hparams.verbose_frequency, self.global_step)
         return RevGradFunction.apply(mask), kl_scores
 
     def compute_scores(self, sequence, sequence_len):
@@ -342,14 +404,14 @@ class _SequenceVAE(pl.LightningModule, ABC):
         # [bs, seq_len, hid_dim]
         score_params = self.dd_score_predictor(context)  # [batch_size x sequence_size x 2]
         # [bs, seq_len, 1]
-        log_stdout(score_params[0], "mean scores", self.hparams.verbose_frequency, self.global_step)
+        #log_stdout(score_params[0], "mean scores", self.hparams.verbose_frequency, self.global_step)
         scores, kl_scores = self.score_model.reparameterize(score_params, test_sampling=False)
         # scores = [bs, seq_len]
         # kl_scores = [bs]
         if self.hparams.random_scores:  # for debugging purposes
             scores = torch.rand_like(scores)
             kl_scores = torch.zeros_like(kl_scores)
-        log_stdout(scores[0], "scores", self.hparams.verbose_frequency, self.global_step)
+        #log_stdout(scores[0], "scores", self.hparams.verbose_frequency, self.global_step)
         return scores, kl_scores
 
     @abstractmethod

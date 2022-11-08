@@ -9,7 +9,7 @@ from lib import computation
 exp_name = "[Ablation][Double-LSTM]"
 
 # select computation nodes
-nodes = [computation.Leonhard()]
+nodes = [computation.Local()]
 
 # parameters
 parameters = dict()
@@ -17,23 +17,23 @@ parameters = dict()
 # used for debugging only:
 # parameters['random_scores'] = ['']
 parameters['verbose_frequency'] = [100]
-parameters['do_not_use_double_lstm'] = ['']  # uncomment to use normal LSTM
+parameters['do_not_use_double_lstm'] = [""]  # uncomment to use normal LSTM
 # parameters['limit_val_batches'] = [1]
 # parameters['limit_train_batches'] = [1]
 
 # checkpointing:
 # parameters['use_checkpoint'] = ['']
-# parameters['make_checkpoint'] = ['']
+parameters['make_checkpoint'] = ['']
 
 # baseline-dropout parameters
 parameters['tf_level'] = [1]  # from previous work
-parameters['decoder_dropout'] = [0]  # default is 0.5
-parameters['wdp'] = [0]  # default is 0.3
+parameters['decoder_dropout'] = [0.5]  # default is 0.5
+parameters['wdp'] = [0.3]  # default is 0.3
 
 # dynamic dropout parameters:
 parameters['use_adam'] = ['']
-parameters['ddr'] = [0.2]
-parameters['lambd'] = [0.1]  # 0.1 is best so far
+parameters['ddr'] = [0.0] # [0.2]
+parameters['lambd'] = [0.0]  # 0.1 is best so far
 parameters['dd_lrate'] = [0.01]
 
 # Other parameters

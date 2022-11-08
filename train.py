@@ -20,7 +20,8 @@ def main(arguments=None):
 
     # parse arguments
     args = parser.parse_args(arguments.split()) if arguments else parser.parse_args()
-
+    print(args)
+    print(args.do_not_use_double_lstm)
     # for reproducibility
     make_reproducible(args.seed)
 
@@ -33,7 +34,7 @@ def main(arguments=None):
                                  'Yelp': SentenceVAE,
                                  'SNLI': SentenceVAE})
     model_name = dataset_to_model_map[args.dataset]
-
+    # SentenceVAE
     # instantiate and initialize model
     model = model_name(**vars(args))
     model.init_weights()
@@ -77,7 +78,7 @@ def main(arguments=None):
     trainer = pl.Trainer.from_argparse_args(args,
                                             logger=WandbLogger(save_dir="logs/", name=exp_name,
                                                                project='dynamic-dropout-'+args.dataset),
-                                            progress_bar_refresh_rate=1000,
+                                            progress_bar_refresh_rate=1,
                                             flush_logs_every_n_steps=1000,
                                             log_every_n_steps=1000,
                                             distributed_backend=(args.distributed_backend if args.gpus > 1 else None),
@@ -134,7 +135,8 @@ def get_parser():
     parser.add_argument('--lambd', type=float, default=0.001, help='Lambda coefficient for regularization.')
     parser.add_argument('--random_scores', action='store_true', help='Debug mode: generate random scores.')
     parser.add_argument('--do_not_use_double_lstm', action='store_true', help='Ablation study on double-lstm effects.')
-
+    # transformer encoder
+    parser.add_argument('--use_transformer_encoder', action='store_true')
     return parser
 
 
