@@ -21,6 +21,15 @@ parameters['do_not_use_double_lstm'] = [""]  # uncomment to use normal LSTM
 # parameters['limit_val_batches'] = [1]
 # parameters['limit_train_batches'] = [1]
 
+# transformer hyperparams
+parameters["use_transformer_encoder"] = [""]
+parameters["num_transformer_blocks"] = [1]
+parameters["transformer_dropout"] = [0.2]
+parameters["transformer_ffdim"] = [2048]
+parameters["nheads"] = [8]
+parameters["transformer_activation"] = ["relu"]
+
+
 # checkpointing:
 # parameters['use_checkpoint'] = ['']
 parameters['make_checkpoint'] = ['']

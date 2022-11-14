@@ -30,6 +30,15 @@ parameters['verbose_frequency'] = [200]
 parameters['use_checkpoint'] = ['']
 parameters['make_checkpoint'] = ['']
 
+# transformer hyperparams
+parameters["use_transformer_encoder"] = [""]
+parameters["num_transformer_blocks"] = [1]
+parameters["transformer_dropout"] = [0.2]
+parameters["transformer_ffdim"] = [2048]
+parameters["nheads"] = [8]
+parameters["transformer_activation"] = ["relu"]
+
+
 # baseline dropout parameters
 parameters['tf_level'] = [1]  # from previous work
 parameters['decoder_dropout'] = [0]  # default is 0.5

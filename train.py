@@ -21,7 +21,7 @@ def main(arguments=None):
     # parse arguments
     args = parser.parse_args(arguments.split()) if arguments else parser.parse_args()
     print(args)
-    print(args.do_not_use_double_lstm)
+    print(args.use_transformer_encoder)
     # for reproducibility
     make_reproducible(args.seed)
 
@@ -137,6 +137,11 @@ def get_parser():
     parser.add_argument('--do_not_use_double_lstm', action='store_true', help='Ablation study on double-lstm effects.')
     # transformer encoder
     parser.add_argument('--use_transformer_encoder', action='store_true')
+    parser.add_argument('--nheads', type=int, default=8)
+    parser.add_argument('--transformer_dropout', type=float, default=0.2)
+    parser.add_argument('--transformer_ffdim', type=int, default=2048)
+    parser.add_argument('--num_transformer_blocks', type=int, default=1)
+    parser.add_argument('--transformer_activation', type=str, default="relu")
     return parser
 
 

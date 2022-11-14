@@ -12,7 +12,7 @@ import random
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import numpy as np
 from lib.ecl import ECL
-
+from lib.utils import PositionalEncoding
 
 class _SequenceVAE(pl.LightningModule, ABC):
 
@@ -23,7 +23,6 @@ class _SequenceVAE(pl.LightningModule, ABC):
 
         #assert np.count_nonzero(np.array([wdp, ddr, decoder_dropout])) <= 1, "More than 1 dropout technique activated!"
         assert 0 <= wdp <= 1 and 0 <= ddr <= 1 and 0 <= decoder_dropout <= 1, "Invalid dropout value!"
-
         # save HPs to checkpoints
         self.training_outputs = []
         #self.automatic_optimization = False
@@ -51,13 +50,34 @@ class _SequenceVAE(pl.LightningModule, ABC):
         self.score_model = IsoGaussianFixedSTD()
         self.obs_model = obs_model
 
+        # transformer hyperparams
+        self.use_transformer_encoder = kw["use_transformer_encoder"]
+        self.nheads = kw["nheads"]
+        self.ffdim = kw["transformer_ffdim"]
+        self.num_transformer_blocks = kw["num_transformer_blocks"]
+        self.transformer_dropout = kw["transformer_dropout"]
+        self.transformer_activation = kw["transformer_activation"]
         # transformer encoder
-        # self.transformer_encoder_layer = nn.TransformerEncoderLayer(
-        #     d_model=hid_dim,
-        #     nhead=4,
-        #     dim_feedforward=2048,
-        #     batch_first=True
-        # )
+        if self.use_transformer_encoder:
+            self.position_encoder = PositionalEncoding(d_model=embed_dim, dropout=0.1)
+            self.transformer_encoder_layer = nn.TransformerEncoderLayer(
+                d_model=embed_dim,
+                nhead=self.nheads,
+                dim_feedforward=self.ffdim,
+                dropout=self.transformer_dropout,
+                activation=self.transformer_activation
+            )
+            self.transformer_encoder = nn.TransformerEncoder(
+                self.transformer_encoder_layer, 
+                self.num_transformer_blocks
+            )
+            self.hid2zparams_transformer = nn.Linear(
+                embed_dim, 
+                z_dim*self.post_model.params_per_dim(), 
+                bias=False
+            )
+        ## the virtual env for this project uses torch 1.7.1; which does not have
+        ## batch_first argument by default. Need to manipulate tensor dims in real time.
 
         # RNN encoder
         self.rnn_encoder = nn.LSTM(embed_dim, hid_dim, num_layers=1, batch_first=True, bidirectional=False)
@@ -337,27 +357,47 @@ class _SequenceVAE(pl.LightningModule, ABC):
         # sequence = [bs, seq_len], sequence_len = [bs]
         embedded_sequence = self.embed_input(sequence)
         # [bs, seq_len, emb_dim]
+        if self.use_transformer_encoder:
+            embedded_sequence = self.position_encoder(embedded_sequence)
+            # [bs, seq_len, emb_dim]
+            embedded_sequence = embedded_sequence.permute(1,0,2)
+            # [seq_len, bs, emb_dim]
+            output = self.transformer_encoder(embedded_sequence)
+            # [seq_len, bs, emb_dim]
+            output = output.permute(1,0,2)
+            # [bs, seq_len, hid_dim]
+            hidden = output.mean(dim=1)
+            # [bs, hid_dim]
+            # mean across the sequence length dimension
+            # the hidden vector in lstm is the final output representation of the
+            # entire sentence. That is the hidden vector is built across the time-steps.
+            # Information about the entire sentence can be approximated here by taking the mean
+            # of hidden representations of each word. We need something similar to CLS here (just 
+            # an example not practically possible).
+            z = self.hid2zparams_transformer(hidden)
+            # [bs, seq_len, z_dim*2]
+        else:
+            if sequence_len is not None:
+                embedded_sequence = pack_padded_sequence(embedded_sequence, sequence_len.cpu(), batch_first=True)
+            output, hidden = self.rnn_encoder(embedded_sequence)
+            # The output is a PackedSequence object from which we need to separate the output and
+            # hidden tensors. If packing had not been used, the dimensions would be as follows:
+            # output = [bs, seq_len, hid_dim]
+            # hidden = ([1, bs, hid_dim], [1, bs, hid_dim])
+            if isinstance(self.rnn_encoder, nn.LSTM):
+                hidden = hidden[0]
+                # [1, bs, hid_dim]
+                # hidden is not affected by packing, so it can be taken out directly
 
-        if sequence_len is not None:
-            embedded_sequence = pack_padded_sequence(embedded_sequence, sequence_len.cpu(), batch_first=True)
-        output, hidden = self.rnn_encoder(embedded_sequence)
-        # The output is a PackedSequence object from which we need to separate the output and
-        # hidden tensors. If packing had not been used, the dimensions would be as follows:
-        # output = [bs, seq_len, hid_dim]
-        # hidden = ([1, bs, hid_dim], [1, bs, hid_dim])
-        if isinstance(self.rnn_encoder, nn.LSTM):
-            hidden = hidden[0]
-            # [1, bs, hid_dim]
-            # hidden is not affected by packing, so it can be taken out directly
-
-            ## only taking out the hidden state over here. If you need to manipulate the cell state
-            ## later on, you might need to come back here.
-            ## This is encoder side. Nothing to do with dropout here.
-        if sequence_len is not None:
-           output, _ = pad_packed_sequence(output, batch_first=True)
-           # Getting the original format tensors again from packing.
-           # [bs, seq_len, hid_dim]
-        return self.hid2zparams(hidden.squeeze()), output
+                ## only taking out the hidden state over here. If you need to manipulate the cell state
+                ## later on, you might need to come back here.
+                ## This is encoder side. Nothing to do with dropout here.
+            if sequence_len is not None:
+                output, _ = pad_packed_sequence(output, batch_first=True)
+                # Getting the original format tensors again from packing.
+                # [bs, seq_len, hid_dim]
+            z = self.hid2zparams(hidden.squeeze())
+        return z, output
         # [bs, z_dim*2], [bs, seq_len, hid_dim]
 
     def _get_next_input(self, truth, prediction):
