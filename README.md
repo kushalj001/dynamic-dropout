@@ -4,6 +4,8 @@
 git clone https://github.com/kushalj001/dynamic-dropout.git
 conda create -n dynamic python=3.7
 pip install -r requirements.txt
+// for 3080 Ti machines:
+pip install torch==1.7.1+cu110 torchvision==0.8.2+cu110 torchaudio==0.7.2 -f https://download.pytorch.org/whl/torch_stable.html
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 // change the project folder in computation.py
 ```

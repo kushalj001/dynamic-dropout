@@ -49,6 +49,11 @@ class _SequenceVAE(pl.LightningModule, ABC):
         self.prior_model = self.post_model = IsoGaussian()
         self.score_model = IsoGaussianFixedSTD()
         self.obs_model = obs_model
+        text_field = self.trainset.fields['src']
+        self.vocab = text_field.vocab
+        input_dim = output_dim = len(text_field.vocab)
+        self.pad_idx = text_field.vocab.stoi[text_field.pad_token]
+        self.word_encoder = nn.Embedding(num_embeddings=input_dim, embedding_dim=512, padding_idx=self.pad_idx)
 
         # transformer hyperparams
         self.use_transformer_encoder = kw["use_transformer_encoder"]
@@ -130,6 +135,7 @@ class _SequenceVAE(pl.LightningModule, ABC):
         return [self.vae_optimizer], [self.vae_scheduler]
 
     def training_step(self, batch, batch_idx):
+        
         self.apply_annealing()
         self.vae_optimizer.zero_grad()
         self.dd_optimizer.zero_grad() if self.hparams.use_adam else None
@@ -141,6 +147,7 @@ class _SequenceVAE(pl.LightningModule, ABC):
         #print(sequence_len[:10])
         output = self(sequence, sequence_len)
         self.manual_backward(output['loss'].mean(), self.vae_optimizer)
+        print("embed grad", self.word_encoder.weight.grad.mean())
         torch.nn.utils.clip_grad_norm_(self.parameters(), 5.0)
         self.vae_optimizer.step()
         self.dd_optimizer.step() if self.hparams.use_adam else None
@@ -244,6 +251,7 @@ class _SequenceVAE(pl.LightningModule, ABC):
         """ Sequence format: [batch_size, num_steps, dim1, dim2, ...]. """
         # sequence: [bs, seq_len]
         # initialize stuff
+        # torch.autograd.set_detect_anomaly(True)
         logpxz = torch.zeros(sequence.size(0), device=self.device)
         reconstruction = []
         x_params_list = []
@@ -347,6 +355,7 @@ class _SequenceVAE(pl.LightningModule, ABC):
     @abstractmethod
     def embed_input(self, input):
         """ Embed input before forwarding it to a recurrent cell. """
+       
 
     @abstractmethod
     def decode_observation(self, state):
@@ -355,14 +364,21 @@ class _SequenceVAE(pl.LightningModule, ABC):
     def encode(self, sequence, sequence_len=None):
         """ Encode parameters of the posterior.  Sequence format: [batch_size, num_steps, dim1, dim2, ...]. """
         # sequence = [bs, seq_len], sequence_len = [bs]
+        for name, p in self.transformer_encoder.named_parameters():
+            if "weight" in name:
+                print(name,p.mean())
         embedded_sequence = self.embed_input(sequence)
+        print("word embed weight", self.word_encoder.weight.mean())
+        #print("after word embedding:", embedded_sequence.mean())
         # [bs, seq_len, emb_dim]
         if self.use_transformer_encoder:
             embedded_sequence = self.position_encoder(embedded_sequence)
+            #print("after position embedd:", embedded_sequence.mean())
             # [bs, seq_len, emb_dim]
             embedded_sequence = embedded_sequence.permute(1,0,2)
             # [seq_len, bs, emb_dim]
             output = self.transformer_encoder(embedded_sequence)
+            #print("transformer output", output.mean())
             # [seq_len, bs, emb_dim]
             output = output.permute(1,0,2)
             # [bs, seq_len, hid_dim]
@@ -397,6 +413,8 @@ class _SequenceVAE(pl.LightningModule, ABC):
                 # Getting the original format tensors again from packing.
                 # [bs, seq_len, hid_dim]
             z = self.hid2zparams(hidden.squeeze())
+        #print("z", z.mean())
+        #print("output", output.mean())
         return z, output
         # [bs, z_dim*2], [bs, seq_len, hid_dim]
 

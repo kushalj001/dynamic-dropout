@@ -18,12 +18,14 @@ class SentenceVAE(_SequenceVAE):
         self.unk_idx = text_field.vocab.stoi[text_field.unk_token]
         self.eos_idx = text_field.vocab.stoi[text_field.eos_token]
         self.word_decoder = nn.Linear(self.hparams.hid_dim, output_dim, bias=False)
-        self.word_encoder = nn.Embedding(num_embeddings=input_dim, embedding_dim=embed_dim, padding_idx=self.pad_idx)
+        #self.word_encoder = nn.Embedding(num_embeddings=input_dim, embedding_dim=embed_dim, padding_idx=self.pad_idx)
         self.dd_word_encoder = nn.Embedding(num_embeddings=input_dim, embedding_dim=embed_dim, padding_idx=self.pad_idx)
         self.obs_model = Categorical(pad_idx=self.pad_idx, init_idx=self.init_idx, eos_idx=self.eos_idx)
         self.hid_dp = nn.Dropout(self.hparams.hid_dropout)
 
     def embed_input(self, input):
+        #print("embed weight max", self.word_encoder.weight.max())
+        #print("embed weight min", self.word_encoder.weight.min())
         return self.word_encoder(input)
 
     def _dd_embed_input(self, input):
@@ -64,6 +66,7 @@ class SentenceVAE(_SequenceVAE):
     def _get_sequence_from_batch(self, batch):
         sequence, sequence_len = batch.src
         return sequence, sequence_len
+    
 
     def validation_epoch_end(self, outputs):
         """ print 10 random sentences in addition to regular logging. """
